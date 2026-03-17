@@ -80,14 +80,21 @@ impl Helper for CalendarHelper {
                         .value_name("EMAIL")
                         .action(ArgAction::Append),
                 )
+                .arg(
+                    Arg::new("meet")
+                        .long("meet")
+                        .help("Add a Google Meet video conference link")
+                        .action(ArgAction::SetTrue),
+                )
                 .after_help("\
 EXAMPLES:
   gws calendar +insert --summary 'Standup' --start '2026-06-17T09:00:00-07:00' --end '2026-06-17T09:30:00-07:00'
   gws calendar +insert --summary 'Review' --start ... --end ... --attendee alice@example.com
+  gws calendar +insert --summary 'Meet' --start ... --end ... --meet
 
 TIPS:
   Use RFC3339 format for times (e.g. 2026-06-17T09:00:00-07:00).
-  For recurring events or conference links, use the raw API instead."),
+  The --meet flag automatically adds a Google Meet link to the event."),
         );
         cmd = cmd.subcommand(
             Command::new("+agenda")
@@ -453,13 +460,60 @@ fn build_insert_request(
         body["attendees"] = json!(attendees_list);
     }
 
+    let mut params = json!({
+        "calendarId": calendar_id
+    });
+
+    if matches.get_flag("meet") {
+        let namespace = uuid::Uuid::NAMESPACE_DNS;
+
+        let mut attendees: Vec<_> = matches
+            .get_many::<String>("attendee")
+            .map(|vals| vals.cloned().collect())
+            .unwrap_or_default();
+        attendees.sort();
+
+        let seed_payload = {
+            let mut map = serde_json::Map::new();
+            map.insert("v".to_string(), json!(1));
+            map.insert("summary".to_string(), json!(summary));
+            map.insert("start".to_string(), json!(start));
+            map.insert("end".to_string(), json!(end));
+            if let Some(loc) = location {
+                map.insert("location".to_string(), json!(loc));
+            }
+            if let Some(desc) = description {
+                map.insert("description".to_string(), json!(desc));
+            }
+            if !attendees.is_empty() {
+                let attendees_list_for_seed: Vec<_> = attendees
+                    .iter()
+                    .map(|email| json!({ "email": email }))
+                    .collect();
+                map.insert("attendees".to_string(), json!(attendees_list_for_seed));
+            }
+            serde_json::Value::Object(map)
+        };
+
+        let seed_data = serde_json::to_vec(&seed_payload).map_err(|e| {
+            GwsError::Other(anyhow::anyhow!(
+                "Failed to serialize seed payload for idempotency key: {e}"
+            ))
+        })?;
+        let request_id = uuid::Uuid::new_v5(&namespace, &seed_data).to_string();
+
+        body["conferenceData"] = json!({
+            "createRequest": {
+                "requestId": request_id,
+                "conferenceSolutionKey": { "type": "hangoutsMeet" }
+            }
+        });
+        params["conferenceDataVersion"] = json!(1);
+    }
     let body_str = body.to_string();
     let scopes: Vec<String> = insert_method.scopes.iter().map(|s| s.to_string()).collect();
 
     // events.insert requires 'calendarId' path parameter
-    let params = json!({
-        "calendarId": calendar_id
-    });
     let params_str = params.to_string();
 
     Ok((params_str, body_str, scopes))
@@ -497,7 +551,8 @@ mod tests {
                 Arg::new("attendee")
                     .long("attendee")
                     .action(ArgAction::Append),
-            );
+            )
+            .arg(Arg::new("meet").long("meet").action(ArgAction::SetTrue));
         cmd.try_get_matches_from(args).unwrap()
     }
 
@@ -519,6 +574,95 @@ mod tests {
         assert!(body.contains("Meeting"));
         assert!(body.contains("2024-01-01T10:00:00Z"));
         assert_eq!(scopes[0], "https://scope");
+    }
+
+    #[test]
+    fn test_build_insert_request_with_meet() {
+        let doc = make_mock_doc();
+        let matches = make_matches_insert(&[
+            "test",
+            "--summary",
+            "Meeting",
+            "--start",
+            "2024-01-01T10:00:00Z",
+            "--end",
+            "2024-01-01T11:00:00Z",
+            "--meet",
+        ]);
+        let (params, body, _) = build_insert_request(&matches, &doc).unwrap();
+
+        let params_json: serde_json::Value = serde_json::from_str(&params).unwrap();
+        assert_eq!(params_json["conferenceDataVersion"], 1);
+
+        let body_json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let create_req = &body_json["conferenceData"]["createRequest"];
+        assert_eq!(create_req["conferenceSolutionKey"]["type"], "hangoutsMeet");
+        assert!(uuid::Uuid::parse_str(create_req["requestId"].as_str().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn test_build_insert_request_with_meet_is_idempotent() {
+        let doc = make_mock_doc();
+        let args = &[
+            "test",
+            "--summary",
+            "Idempotent Meeting",
+            "--start",
+            "2024-01-01T10:00:00Z",
+            "--end",
+            "2024-01-01T11:00:00Z",
+            "--meet",
+        ];
+        let matches1 = make_matches_insert(args);
+        let (_, body1, _) = build_insert_request(&matches1, &doc).unwrap();
+
+        let matches2 = make_matches_insert(args);
+        let (_, body2, _) = build_insert_request(&matches2, &doc).unwrap();
+
+        let b1: serde_json::Value = serde_json::from_str(&body1).unwrap();
+        let b2: serde_json::Value = serde_json::from_str(&body2).unwrap();
+
+        assert_eq!(
+            b1["conferenceData"]["createRequest"]["requestId"],
+            b2["conferenceData"]["createRequest"]["requestId"],
+            "requestId should be deterministic for the same event details"
+        );
+    }
+
+    #[test]
+    fn test_build_insert_request_with_meet_idempotency_robust() {
+        let doc = make_mock_doc();
+        
+        // Base case
+        let args_base = &[
+            "test", "--summary", "S", "--start", "2024-01-01T10:00:00Z", "--end", "2024-01-01T11:00:00Z",
+            "--meet", "--attendee", "a@b.com", "--attendee", "c@d.com"
+        ];
+        let (_, body_base, _) = build_insert_request(&make_matches_insert(args_base), &doc).unwrap();
+        let b_base: serde_json::Value = serde_json::from_str(&body_base).unwrap();
+        let id_base = b_base["conferenceData"]["createRequest"]["requestId"].as_str().unwrap();
+
+        // Same but different attendee order
+        let args_reordered = &[
+            "test", "--summary", "S", "--start", "2024-01-01T10:00:00Z", "--end", "2024-01-01T11:00:00Z",
+            "--meet", "--attendee", "c@d.com", "--attendee", "a@b.com"
+        ];
+        let (_, body_reordered, _) = build_insert_request(&make_matches_insert(args_reordered), &doc).unwrap();
+        let b_reordered: serde_json::Value = serde_json::from_str(&body_reordered).unwrap();
+        let id_reordered = b_reordered["conferenceData"]["createRequest"]["requestId"].as_str().unwrap();
+
+        assert_eq!(id_base, id_reordered, "Attendee order should not change requestId");
+
+        // Different summary -> different ID
+        let args_diff = &[
+            "test", "--summary", "Diff", "--start", "2024-01-01T10:00:00Z", "--end", "2024-01-01T11:00:00Z",
+            "--meet", "--attendee", "a@b.com", "--attendee", "c@d.com"
+        ];
+        let (_, body_diff, _) = build_insert_request(&make_matches_insert(args_diff), &doc).unwrap();
+        let b_diff: serde_json::Value = serde_json::from_str(&body_diff).unwrap();
+        let id_diff = b_diff["conferenceData"]["createRequest"]["requestId"].as_str().unwrap();
+
+        assert_ne!(id_base, id_diff, "Different summary should produce different requestId");
     }
 
     #[test]
