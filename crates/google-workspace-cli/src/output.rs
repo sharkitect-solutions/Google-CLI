@@ -19,28 +19,8 @@
 //! these helpers to prevent escape-sequence injection, Unicode spoofing,
 //! and to respect `NO_COLOR` / non-TTY environments.
 
-use crate::error::GwsError;
-
-// ── Dangerous character detection ─────────────────────────────────────
-
-/// Returns `true` for Unicode characters that are dangerous in terminal
-/// output but not caught by `char::is_control()`: zero-width chars, bidi
-/// overrides, Unicode line/paragraph separators, and directional isolates.
-///
-/// Using `matches!` with char ranges gives O(1) per character instead of the
-/// O(M) linear scan that a slice `.contains()` would require.
-pub(crate) fn is_dangerous_unicode(c: char) -> bool {
-    matches!(c,
-        // zero-width: ZWSP, ZWNJ, ZWJ, BOM/ZWNBSP
-        '\u{200B}'..='\u{200D}' | '\u{FEFF}' |
-        // bidi: LRE, RLE, PDF, LRO, RLO
-        '\u{202A}'..='\u{202E}' |
-        // line / paragraph separators
-        '\u{2028}'..='\u{2029}' |
-        // directional isolates: LRI, RLI, FSI, PDI
-        '\u{2066}'..='\u{2069}'
-    )
-}
+// Import dangerous-char detection from the library crate.
+pub(crate) use google_workspace::validate::is_dangerous_unicode;
 
 // ── Sanitization ──────────────────────────────────────────────────────
 
@@ -60,27 +40,6 @@ pub(crate) fn sanitize_for_terminal(text: &str) -> String {
             !is_dangerous_unicode(c)
         })
         .collect()
-}
-
-/// Rejects strings containing control characters (C0: U+0000–U+001F,
-/// C1: U+0080–U+009F, and DEL: U+007F) or dangerous Unicode characters
-/// such as zero-width chars, bidi overrides, and line/paragraph separators.
-///
-/// Used for validating CLI argument values at the parse boundary.
-pub(crate) fn reject_dangerous_chars(value: &str, flag_name: &str) -> Result<(), GwsError> {
-    for c in value.chars() {
-        if c.is_control() {
-            return Err(GwsError::Validation(format!(
-                "{flag_name} contains invalid control characters"
-            )));
-        }
-        if is_dangerous_unicode(c) {
-            return Err(GwsError::Validation(format!(
-                "{flag_name} contains invalid Unicode characters"
-            )));
-        }
-    }
-    Ok(())
 }
 
 // ── Color ─────────────────────────────────────────────────────────────
@@ -187,80 +146,11 @@ mod tests {
         assert_eq!(sanitize_for_terminal("日本語 café αβγ"), "日本語 café αβγ");
     }
 
-    // ── reject_dangerous_chars ────────────────────────────────────
-
-    #[test]
-    fn reject_clean_string() {
-        assert!(reject_dangerous_chars("hello/world", "test").is_ok());
-    }
-
-    #[test]
-    fn reject_tab() {
-        assert!(reject_dangerous_chars("hello\tworld", "test").is_err());
-    }
-
-    #[test]
-    fn reject_newline() {
-        assert!(reject_dangerous_chars("hello\nworld", "test").is_err());
-    }
-
-    #[test]
-    fn reject_del() {
-        assert!(reject_dangerous_chars("hello\x7Fworld", "test").is_err());
-    }
-
-    #[test]
-    fn reject_zero_width_space() {
-        assert!(reject_dangerous_chars("foo\u{200B}bar", "test").is_err());
-    }
-
-    #[test]
-    fn reject_bom() {
-        assert!(reject_dangerous_chars("foo\u{FEFF}bar", "test").is_err());
-    }
-
-    #[test]
-    fn reject_rtl_override() {
-        assert!(reject_dangerous_chars("foo\u{202E}bar", "test").is_err());
-    }
-
-    #[test]
-    fn reject_line_separator() {
-        assert!(reject_dangerous_chars("foo\u{2028}bar", "test").is_err());
-    }
-
-    #[test]
-    fn reject_paragraph_separator() {
-        assert!(reject_dangerous_chars("foo\u{2029}bar", "test").is_err());
-    }
-
-    #[test]
-    fn reject_zero_width_joiner() {
-        assert!(reject_dangerous_chars("foo\u{200D}bar", "test").is_err());
-    }
-
-    #[test]
-    fn reject_preserves_normal_unicode() {
-        assert!(reject_dangerous_chars("日本語", "test").is_ok());
-        assert!(reject_dangerous_chars("café", "test").is_ok());
-        assert!(reject_dangerous_chars("αβγ", "test").is_ok());
-    }
-
-    #[test]
-    fn reject_c1_control_csi() {
-        // U+009B is the C1 "Control Sequence Introducer" — can inject
-        // terminal escape sequences just like ESC+[
-        assert!(reject_dangerous_chars("foo\u{009B}bar", "test").is_err());
-    }
-
     // ── colorize ──────────────────────────────────────────────────
 
     #[test]
     fn colorize_returns_text_in_no_color_mode() {
-        // In test environment, stderr is typically not a TTY
         let result = colorize("hello", "31");
-        // Either plain text (no TTY) or colored (TTY) — we just verify
-        // it contains the original text
         assert!(result.contains("hello"));
     }
 }
