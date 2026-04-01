@@ -1,5 +1,150 @@
 # @googleworkspace/cli
 
+## 0.22.5
+
+### Patch Changes
+
+- 5d24ac2: Add cargo-audit CI workflow for automated dependency vulnerability scanning
+- ecddf2e: Add cargo-deny configuration for license, advisory, and source auditing
+- 503315b: Update installation instructions to prioritize GitHub Releases over npm
+- 6ccbb42: fix: auto-install binary on run if missing
+
+  pnpm skips postinstall when the package is already up to date.
+  This ensures run.js will auto-trigger install.js if the
+  binary is missing, fixing the 'gws binary not found' error.
+
+- b307856: Migrated the internal AI skills registry (personas and recipes) from YAML to TOML. This allows us to drop the unmaintained serde_yaml dependency, improving the project's supply chain security posture.
+- 158f93a: Verify SHA256 checksum of downloaded binary in npm postinstall script
+- b422e5d: Pin cross-rs to v0.2.5 in release workflow to prevent unpinned git HEAD builds
+
+## 0.22.4
+
+### Patch Changes
+
+- 86c08cf: Remove cargo-dist; use native Node.js fetch for npm binary installer
+
+  Replaces the cargo-dist generated release pipeline and npm package with:
+
+  - A custom GitHub Actions release workflow with matrix cross-compilation
+  - A zero-dependency npm installer using native `fetch()` (Node 18+)
+  - Removes axios, rimraf, detect-libc, console.table, and axios-proxy-builder dependencies from the published npm package
+
+## 0.22.3
+
+### Patch Changes
+
+- 674d53a: Fix `Lint Skills` CI job by installing `uv` via `astral-sh/setup-uv` before running `uvx`
+- c7c42f6: fix: register script service and resolve test path validation errors
+- 80bd150: feat(auth): use strict OS keychain integration on macOS and Windows
+
+  Closes #623. The CLI no longer writes a fallback `.encryption_key` text file on macOS and Windows when securely storing credentials. Instead, it strictly uses the native OS keychain (Keychain Access on macOS, Credential Manager on Windows). If an old `.encryption_key` file is found during a successful keychain login, it will be automatically deleted for security.
+  Linux deployments continue to use a seamless file-based fallback by default to ensure maximum compatibility with headless continuous integration (CI) runners, Docker containers, and SSH environments without desktop DBUS services.
+
+- ec7f56b: Sync generated skills with latest Google Discovery API specs
+
+## 0.22.2
+
+### Patch Changes
+
+- a52d297: Improve proxy-aware OAuth flows and clean up review feedback for auth login.
+
+## 0.22.1
+
+### Patch Changes
+
+- 6a45832: Sync generated skills with latest Google Discovery API specs
+
+## 0.22.0
+
+### Minor Changes
+
+- 0850c48: Add `--draft` flag to Gmail `+send`, `+reply`, `+reply-all`, and `+forward` helpers to save messages as drafts instead of sending them immediately
+
+## 0.21.2
+
+### Patch Changes
+
+- c4448b9: Add crates.io publishing to release workflow
+
+  Publishes both `google-workspace` and `google-workspace-cli` to crates.io on each release. The library crate is published first (as a dependency), followed by the CLI crate.
+
+## 0.21.1
+
+### Patch Changes
+
+- ea0849a: Fix version-sync script and bump CLI crate version to 0.21.0
+
+  The `version-sync.sh` script was updating the root `Cargo.toml` which no longer has a `[package]` section after the workspace refactor. Updated to target `crates/google-workspace-cli/Cargo.toml`. Also syncs the CLI crate version to 0.21.0 to match `package.json`.
+
+## 0.21.0
+
+### Minor Changes
+
+- 029e5de: Extract `google-workspace` library crate for programmatic Rust API access (closes #386)
+
+  Introduces a Cargo workspace with a new `google-workspace` library crate (`crates/google-workspace/`)
+  that exposes the core modules for use as a Rust dependency:
+
+  - `discovery` — Discovery Document types and fetching
+  - `error` — Structured `GwsError` type
+  - `services` — Service registry and resolution
+  - `validate` — Input validation and URL encoding
+  - `client` — HTTP client with retry logic
+
+  The `gws` binary crate re-exports all library types transparently — zero behavioral changes.
+
+## 0.20.1
+
+### Patch Changes
+
+- b8fd3d9: fix(client): add 10s connect timeout to prevent hangs on initial connection
+- 2bfcca9: Move version from top-level SKILL.md frontmatter to metadata and track CLI version
+- 2ddb46e: test(gmail): add regression tests for RFC 2822 display name quoting
+- 75a7121: Sync generated skills with latest Google Discovery API specs
+
+## 0.20.0
+
+### Minor Changes
+
+- e782dd7: Forward original attachments by default and preserve inline images in HTML mode.
+
+  `+forward` now includes the original message's attachments and inline images by default,
+  matching Gmail web behavior. Use `--no-original-attachments` to opt out.
+  `+reply`/`+reply-all` with `--html` preserve inline images in the quoted body via
+  `multipart/related`. In plain-text mode, inline images are not included (matching Gmail web).
+
+## 0.19.0
+
+### Minor Changes
+
+- a078945: Refactor all `gws auth` subcommands to use clap for argument parsing
+
+  Replace manual argument parsing in `handle_auth_command`, `handle_login`, `resolve_scopes`, and `handle_export` with structured `clap::Command` definitions. Introduces `ScopeMode` enum for type-safe scope selection and adds proper `--help` support for all auth subcommands.
+
+### Patch Changes
+
+- 8a749c2: feat(helpers): add --dry-run support to events helper commands
+
+  Add dry-run mode to `gws events +renew` and `gws events +subscribe` commands.
+  When --dry-run is specified, the commands will print what actions would be
+  taken without making any API calls. This allows agents to simulate requests
+  and learn without reaching the server.
+
+- d679401: Fix `mask_secret` panic on multi-byte UTF-8 secrets by using char-based indexing instead of byte-offset slicing
+- d341de2: Handle --help/-h in `gws auth setup` before launching the setup wizard, preventing accidental project creation when users just want usage info
+- f157208: fix: use block-style YAML sequences in generated SKILL.md frontmatter
+
+  Replace flow sequences (`bins: ["gws"]`, `skills: [...]`) with block-style
+  sequences (`bins:\n  - gws`) in all generated SKILL.md frontmatter templates.
+
+  Flow sequences are valid YAML but rejected by `strictyaml`, which the
+  Agent Skills reference implementation (`agentskills validate`) uses to parse
+  frontmatter. This caused all 93 generated skills to fail validation.
+
+  Fixes #521
+
+- b4d5e26: Fix auth error propagation: properly propagate errors when token directory creation or permission setting fails, instead of silently ignoring them
+
 ## 0.18.1
 
 ### Patch Changes
